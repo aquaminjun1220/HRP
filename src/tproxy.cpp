@@ -2,6 +2,8 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -38,16 +40,18 @@ static std::map<int, int> omap;
 static int open_tun(char *dev) 
 {
   struct ifreq ifr;
-  int fd, err;
-  char clonedev[13] = "/dev/net/tun";
+  int fd;
+  int sfd;
+  struct sockaddr_in sai;
 
-  if( (fd = open(clonedev , O_RDWR)) < 0 ) {
+  // open tun
+  if( (fd = open("/dev/net/tun" , O_RDWR)) < 0 ) {
     perror("Failed to open /dev/net/tun");
     exit(-1);
   }
-  printf("INFO: opened tun");
   std::cout << "INFO: opened tun" << std::endl;
 
+  // setup ifr for first ioctl call (initialize tun)
   memset(&ifr, 0, sizeof(ifr));
   ifr.ifr_flags = IFF_TUN | IFF_NO_PI;
   if (*dev)
@@ -55,14 +59,36 @@ static int open_tun(char *dev)
     strncpy(ifr.ifr_name, "tun10", IFNAMSIZ);
   }
 
-  if( (err = ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
+  if( (ioctl(fd, TUNSETIFF, (void *)&ifr)) < 0 ) {
     perror("Failed ioctl(TUNSETIFF)");
     close(fd);
     exit(-1);
   }
   strcpy(dev, ifr.ifr_name);
-  printf("INFO: activated tun");
-  std::cout << "INFO: activated tun" << std::endl;
+  std::cout << "INFO: initialized tun" << std::endl;
+
+  // using socket, set tun
+  sfd = socket(AF_INET, SOCK_DGRAM, 0);
+  memset(&sai, 0, sizeof(struct sockaddr));
+  sai.sin_family = AF_INET;
+  sai.sin_port   = 0;
+  sai.sin_addr.s_addr = inet_addr("10.20.20.20");
+  memcpy(&(ifr.ifr_addr), &sai, sizeof(struct sockaddr));
+  if( (ioctl(sfd, SIOCSIFADDR, (void *)&ifr)) < 0 ) {
+    perror("Failed ioctl(SIOCSIFADDR)");
+    close(fd);
+    exit(-1);
+  }
+
+  ifr.ifr_flags |= IFF_UP | IFF_RUNNING;
+  if( (ioctl(sfd, SIOCSIFFLAGS, (void *)&ifr)) < 0 ) {
+    perror("Failed ioctl(SIOCSIFFLAGS)");
+    close(fd);
+    exit(-1);
+  } 
+  close(sfd);
+  std::cout << "INFO: setted tun" << std::endl;
+
   return fd;
 }
 
