@@ -9,6 +9,8 @@
 #include <unistd.h>
 #include <net/if.h>
 #include <linux/if_tun.h>
+#include <linux/udp.h>
+#include <linux/ip.h>
 #include <sys/socket.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -16,6 +18,7 @@
 #include <map>
 #include <signal.h>
 #include "tproxy.hpp"
+
 
 typedef void handler_t(int);
 static std::map<int, int> omap;
@@ -42,6 +45,7 @@ static int open_tun(char *dev)
   struct ifreq ifr;
   int fd;
   int sfd;
+  int i = 1;
   struct sockaddr_in sai;
 
   // open tun
@@ -133,6 +137,28 @@ static int osock_set(int oport)
     return osock;
 }
 
+static int rawsock_set(int oport)
+{
+    int osock;
+    struct sockaddr_in osock_addr;
+    if ((osock = socket(AF_INET, SOCK_DGRAM, 0)) < 0)
+    {
+        perror("Failed to create osock");
+        exit(-1);
+    }
+
+    memset(&osock_addr, 0, sizeof(osock_addr));
+    osock_addr.sin_family = AF_INET;
+    osock_addr.sin_addr.s_addr = INADDR_ANY;
+    osock_addr.sin_port = htons(oport);
+    while (bind(osock, (const sockaddr *)(&osock_addr), sizeof(osock_addr)) < 0)
+    {
+        oport++;
+        osock_addr.sin_port = htons(oport);
+    }
+    return osock;
+}
+
 static int get_sock_port(int sock)
 {
     struct sockaddr_in sock_addr;
@@ -190,7 +216,7 @@ static void nft_flushRTP()
  * cread: read routine that checks for errors and exits if an error is    *
  *        returned.                                                       *
  **************************************************************************/
-static int cread(int fd, char *buf, int n){
+static int cread(int fd, uint8_t *buf, int n){
   
   int nread;
 
@@ -199,25 +225,6 @@ static int cread(int fd, char *buf, int n){
     exit(1);
   }
   return nread;
-}
-
-/**************************************************************************
- * read_n: ensures we read exactly n bytes, and puts them into "buf".     *
- *         (unless EOF, of course)                                        *
- **************************************************************************/
-static int read_n(int fd, char *buf, int n)
-{
-  int nread, left = n;
-
-  while(left > 0) {
-    if ((nread = cread(fd, buf, left)) == 0){
-      return 0 ;      
-    }else {
-      left -= nread;
-      buf += nread;
-    }
-  }
-  return n;  
 }
 
 void sigINThandler(int sig)
@@ -254,35 +261,70 @@ handler_t *Signal(int signum, handler_t *handler)
     return (old_action.sa_handler);
 }
 
+static void process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
+{
+  //struct iphdr ip;
+  //struct udphdr udp;
+
+  //memcpy(in_buffer, &ip, sizeof(struct iphdr));
+  //memcpy(in_buffer + sizeof(struct udphdr), &udp, sizeof(struct udphdr));
+
+  std::cout << std::hex << std::setfill('0');
+  for (int i = 0; i < in_len; ++i)
+  {
+    if (i % 4 == 0)
+    {
+      std::cout << std::endl;
+    }
+    std::cout << std::setw(2) << static_cast<unsigned>(static_cast<uint8_t>(in_buffer[i])) << " ";
+  }
+  std::cout << std::endl;
+
+}
+
+/**
+ * 60 00 00 00 
+ * 00 08 3a ff 
+ * 
+ * fe 80 00 00 
+ * 00 00 00 00
+ * f7 60 dd e8 
+ * 47 d6 5d 11 
+ * 
+ * ff 02 00 00 
+ * 00 00 00 00
+ * 00 00 00 00 
+ * 00 00 00 02 
+ * 
+ * 85 00 03 06 
+ * 00 00 00 00
+
+*/
+
 int main()
 {
-    char dev[IF_NAMESIZE] = "tun10";
-    int tun;
-    char in_buffer[2000];
-    int in_len;
-    char out_buffer[2000];
-    int out_len;
-    
-    std::cout << "Press any key to start" << std::endl;
-    std::cin.get();
+  char dev[IF_NAMESIZE] = "tun10";
+  int tun;
+  uint8_t in_buffer[2000];
+  int in_len;
+  uint8_t out_buffer[2000];
+  int out_len;
+
+  std::cout << "Press any key to start" << std::endl;
+  std::cin.get();
 
 
-    tun = open_tun(dev);
-    init_proxy(dev);
-    Signal(SIGINT, sigINThandler);
+  tun = open_tun(dev);
+  init_proxy(dev);
+  Signal(SIGINT, sigINThandler);
 
-    nft_includeSIP(5060);
+  nft_includeSIP(5060);
 
-    while (1)
-    {
-        std::cout << "Trying to read..." << std::endl;
-        in_len = cread(tun, in_buffer, 2000);
-        std::cout << std::hex << std::setfill('0');
-        for (int i = 0; i < in_len; ++i)
-        {
-            std::cout << std::setw(2) << static_cast<unsigned>(static_cast<uint8_t>(in_buffer[i])) << " ";
-        }
-        std::cout << std::endl;
-        memset(in_buffer, 0, sizeof(in_buffer));
-    }
+  while (1)
+  {
+    std::cout << "Trying to read..." << std::endl;
+    in_len = cread(tun, in_buffer, 2000);
+    process_bmsg(in_buffer, out_buffer, in_len); 
+    memset(in_buffer, 0, sizeof(in_buffer));
+  }
 }
