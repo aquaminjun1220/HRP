@@ -12,7 +12,7 @@ while True:
         break
     ip = input("IP")
     if ip == '':
-        ip = '127.0.0.1'
+        ip = '172.20.130.129'
     prt = input("PORT")
     if prt == '':
         prt = '8888'
