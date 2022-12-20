@@ -236,7 +236,9 @@ static int process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
   if (ntohs(udp.source) == 5060)
   {
     std::cout << "SIP packet recieved:" << std::endl;
-    memcpy(optr, iptr, in_len);
+    std::string msg((char *)iptr, in_len);
+    std::transform(msg.begin(), msg.end(), msg.begin(), ::tolower);
+    strcpy((char *)optr, msg.c_str());
     optr += in_len;
     return optr - out_buffer;
   }
