@@ -20,7 +20,6 @@
 #include <signal.h>
 
 typedef void handler_t(int);
-static sockaddr_in sai;
 static char buffer[128];
 static std::map<std::string, int> valid_methods = {
   {"REGISTER", 1},
@@ -44,6 +43,7 @@ static int rawsock_set();
 static int cread(int, uint8_t *, int);
 handler_t sigINThandler;
 handler_t *Signal(int, handler_t *);
+pid_t Fork();
 static std::string find_method(std::string&);
 static int process_bmsg(uint8_t *, uint8_t *, int);
 
@@ -179,6 +179,17 @@ handler_t *Signal(int signum, handler_t *handler)
   return (old_action.sa_handler);
 }
 
+pid_t Fork()
+{
+  int pid;
+  if ((pid = fork()) < 0)
+  {
+    perror("ERROR: Failed to fork");
+    kill(0, SIGINT);
+  }
+  return pid;
+}
+
 static std::string find_method(std::string& sipmsg)
 {
   int i = sipmsg.find(" ", 0);
@@ -199,34 +210,26 @@ static std::string find_method(std::string& sipmsg)
   return response + " " + request;
 }
 
-static int process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
+static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
 {
   uint8_t *iptr = in_buffer;
-  uint8_t *optr = out_buffer;
-  uint16_t *ip_len;
-  uint16_t *udp_len;
   uint8_t version;
   version = (*in_buffer) & 0xF0;
   // network protocol is IPV4, copy IPV4 header to out_buffer
   if (version == 4<<4)
   {
-    struct iphdr ip;
-    memcpy(&ip, iptr, sizeof(struct iphdr));
-    ip_len = &(reinterpret_cast<struct iphdr *>(iptr)->tot_len);
+    struct iphdr *ip = reinterpret_cast<struct iphdr *>(iptr);
     iptr += sizeof(struct iphdr);
-    in_len -= sizeof(struct iphdr);
-    memcpy(optr, &ip, sizeof(struct iphdr));
-    optr += sizeof(struct iphdr);
     std::cout << "--------    IPV4 Header Info    --------" << std::endl;
     char addr[64];
-    inet_ntop(AF_INET, &(ip.saddr), addr, sizeof(addr));
+    inet_ntop(AF_INET, &(ip->saddr), addr, sizeof(addr));
     std::cout << "Source Address: " << addr << std::endl;
-    inet_ntop(AF_INET, &(ip.daddr), addr, sizeof(addr));
+    inet_ntop(AF_INET, &(ip->daddr), addr, sizeof(addr));
     std::cout << "Destination Address: " << addr << std::endl;
-    sai.sin_family = AF_INET;
-    sai.sin_addr.s_addr = ip.daddr;
-    sai.sin_port = 0;
-    if (ip.protocol != IPPROTO_UDP)
+    sai->sin_family = AF_INET;
+    sai->sin_addr.s_addr = ip->daddr;
+    sai->sin_port = 0;
+    if (ip->protocol != IPPROTO_UDP)
     {
       std::cout << "--------     non-UDP Packet     --------" << std::endl;
       return 0;
@@ -236,18 +239,13 @@ static int process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
   // network protocol is IPV6, copy IPV6 header to out_buffer
   else if (version == 6<<4)
   {
-    struct ip6_hdr ip6;
-    memcpy(&ip6, iptr, sizeof(struct ip6_hdr));
-    ip_len = &(reinterpret_cast<struct ip6_hdr *>(iptr)->ip6_plen);
+    struct ip6_hdr *ip6 = reinterpret_cast<struct ip6_hdr *>(iptr);
     iptr += sizeof(struct ip6_hdr);
-    in_len -= sizeof(struct ip6_hdr);
-    memcpy(optr, &ip6, sizeof(struct ip6_hdr));
-    optr += sizeof(struct ip6_hdr);
     std::cout << "--------    IPV6 Header Info    --------" << std::endl;
     char addr[64];
-    inet_ntop(AF_INET6, &(ip6.ip6_src), addr, sizeof(addr));
+    inet_ntop(AF_INET6, &(ip6->ip6_src), addr, sizeof(addr));
     std::cout << "Source Address: " << addr << std::endl;
-    inet_ntop(AF_INET6, &(ip6.ip6_dst), addr, sizeof(addr));
+    inet_ntop(AF_INET6, &(ip6->ip6_dst), addr, sizeof(addr));
     std::cout << "Destination Address: " << addr << std::endl;
     std::cout << "--------   IPV6 not supported   --------" << std::endl;
     return 0;
@@ -256,24 +254,20 @@ static int process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
   else
   {
     std::cout << "--------     non-IP Packet      --------" << std::endl;
+    return 0;
   }
 
   // transport protocol is UDP
-  struct udphdr udp;
-  memcpy(&udp, iptr, sizeof(struct udphdr));
-  udp_len = &(reinterpret_cast<struct udphdr *>(iptr)->len);
+  struct udphdr *udp = reinterpret_cast<struct udphdr *>(iptr);
   iptr += sizeof(struct udphdr);
-  in_len -= sizeof(struct udphdr);
-  udp.check = 0;
-  memcpy(optr, &udp, sizeof(struct udphdr));
-  optr += sizeof(struct udphdr);
+  udp->check = 0;
   std::cout << "--------    UDP Header Info     --------" << std::endl;
-  std::cout << "Source Port: " << ntohs(udp.source) << std::endl;
-  std::cout << "Destination Port: " << ntohs(udp.dest) << std::endl;
+  std::cout << "Source Port: " << ntohs(udp->source) << std::endl;
+  std::cout << "Destination Port: " << ntohs(udp->dest) << std::endl;
 
   // application is SIP, copy udp header and payload to out_buffer, modify source port.
   // do some SIP specific stuff
-  if (ntohs(udp.source) == 5060)
+  if (ntohs(udp->source) == 5060)
   {
     std::cout << "--------       SIP Packet       --------" << std::endl;
     std::string sipmsg((char *)(iptr), in_len);
@@ -295,20 +289,12 @@ static int process_bmsg(uint8_t *in_buffer, uint8_t *out_buffer, int in_len)
       system("nft flush set HRP inc_portRTP");
       std::cout << "INFO: Detected BYE-ish. Flushing rtp port set." << std::endl;
     }
-    memcpy(optr, iptr, in_len);
-    iptr += in_len;
-    optr += in_len;
-    in_len -= in_len;
-    return optr - out_buffer;
+    return in_len;
   }
   else
   {
     std::cout << "--------    maybe-RTP Packet    --------" << std::endl;
-    memcpy(optr, iptr, in_len);
-    iptr += in_len;
-    optr += in_len;
-    in_len -= in_len;
-    return optr - out_buffer;
+    return in_len;
   }
 }
 
@@ -316,27 +302,17 @@ int main()
 {
   char dev[IF_NAMESIZE] = "tun10";
   int tun, rsock;
+  sockaddr_in sai;
   uint8_t in_buffer[2000];
   int in_len;
-  uint8_t out_buffer[2000];
   int out_len;
-  pid_t pid;
+  int pipes[10];
   sai.sin_family = AF_INET;
   sai.sin_addr.s_addr = 0;
   sai.sin_port = 0;
 
   std::cout << "-------- Press any key to start --------" << std::endl;
   std::cin.get();
-
-  //if ((pid = fork()) < 0)
-  //{
-  //  perror("Failed to fork");
-  //  exit(-1);
-  //}
-  //else if (pid == 0)
-  //{
-
-  //}
 
   tun = open_tun(dev);
   rsock = rawsock_set();
@@ -349,11 +325,10 @@ int main()
     in_len = cread(tun, in_buffer, 2000);
     std::cout << "!!------    Received packet     ------!!" << std::endl;
     std::cout << std::endl << std::endl;
-    out_len = process_bmsg(in_buffer, out_buffer, in_len);
-    sendto(rsock, out_buffer, out_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+    out_len = process_bmsg(in_buffer, &sai, in_len);
+    sendto(rsock, in_buffer, out_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
     memset(in_buffer, 0, sizeof(in_buffer));
     in_len = 0;
-    memset(out_buffer, 0, sizeof(out_buffer));
     out_len = 0;
     std::cout << std::endl << std::endl;
   }
