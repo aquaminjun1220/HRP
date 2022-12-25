@@ -37,6 +37,7 @@ static std::map<std::string, int> valid_methods = {
   {"INFO", 1},
   {"OPTIONS", 1}
 };
+static int rtpport;
 static int open_tun(char *);
 static void init_rules(char *);
 static int rawsock_set();
@@ -232,7 +233,7 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
     if (ip->protocol != IPPROTO_UDP)
     {
       std::cout << "--------     non-UDP Packet     --------" << std::endl;
-      return 0;
+      return -1;
     }
   }
 
@@ -248,13 +249,13 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
     inet_ntop(AF_INET6, &(ip6->ip6_dst), addr, sizeof(addr));
     std::cout << "Destination Address: " << addr << std::endl;
     std::cout << "--------   IPV6 not supported   --------" << std::endl;
-    return 0;
+    return -1;
   }
 
   else
   {
     std::cout << "--------     non-IP Packet      --------" << std::endl;
-    return 0;
+    return -1;
   }
 
   // transport protocol is UDP
@@ -279,57 +280,100 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
       i = sipmsg.find("m=audio", i+1);
       i = sipmsg.find(" ", i+1);
       int j = sipmsg.find(" ", i+1);
-      std::string rtpport = sipmsg.substr(i+1, j-(i+1));
-      sprintf(buffer, "nft add element HRP inc_portRTP \"{ %s }\" ", rtpport.c_str());
+      std::string new_rtpport = sipmsg.substr(i+1, j-(i+1));
+      sprintf(buffer, "nft add element HRP inc_portRTP \"{ %s }\" ", new_rtpport.c_str());
       system(buffer);
-      std::cout << "INFO: Detected INVITE. Adding port " << rtpport << " to rtp port set." << std::endl;
+      rtpport = stoi(new_rtpport);
+      std::cout << "INFO: Detected INVITE. Adding port " << new_rtpport << " to rtp port set." << std::endl;
     }
     else if ((method == "BYE") || (method == "CANCEL") || (method == "200 OK BYE") || (method == "200 OK CANCEL"))
     {
       system("nft flush set HRP inc_portRTP");
+      rtpport = 0;
       std::cout << "INFO: Detected BYE-ish. Flushing rtp port set." << std::endl;
     }
-    return in_len;
+    return 0;
+  }
+  else if (ntohs(udp->source) == rtpport)
+  {
+    std::cout << "--------    RTP Packet    --------" << std::endl;
+    return iptr + 12 - in_buffer;
   }
   else
-  {
-    std::cout << "--------    maybe-RTP Packet    --------" << std::endl;
-    return in_len;
-  }
+    return 0;
 }
 
 int main()
 {
-  char dev[IF_NAMESIZE] = "tun10";
-  int tun, rsock;
-  sockaddr_in sai;
-  uint8_t in_buffer[2000];
-  int in_len;
-  int out_len;
-  int pipes[10];
-  sai.sin_family = AF_INET;
-  sai.sin_addr.s_addr = 0;
-  sai.sin_port = 0;
-
   std::cout << "-------- Press any key to start --------" << std::endl;
   std::cin.get();
 
+  int pipes[10];
+  pipe(pipes);
+  pipe(pipes+2);
+  pipe(pipes+4);
+  pipe(pipes+6);
+  pipe(pipes+8);
+
+  if (!Fork())
+  {
+    std::cout << "INFO: Starting child 1 - RTP PCMU -> .wav" << std::endl;
+    dup2(pipes[0], 0);
+    dup2(pipes[3], 1);
+
+    close(pipes[0]);
+    close(pipes[1]);
+    close(pipes[2]);
+    close(pipes[3]);
+    close(pipes[4]);
+    close(pipes[5]);
+    close(pipes[6]);
+    close(pipes[7]);
+    close(pipes[8]);
+    close(pipes[9]);
+
+    char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0", "./pipe1.wav", NULL};
+    if (execvp(*args, args) < 0)
+    {
+      perror("ERROR: Failed to start child 1 - RTP PCMU -> .wav");
+      exit(-1);
+    }
+  }
+
+  char dev[IF_NAMESIZE] = "tun10";
+  int tun, rsock;
   tun = open_tun(dev);
   rsock = rawsock_set();
 
   init_rules(dev);
   Signal(SIGINT, sigINThandler);
 
+  sockaddr_in sai;
+  uint8_t in_buffer[2000];
+  int in_len, offset;
+
+  sai.sin_family = AF_INET;
+  sai.sin_addr.s_addr = 0;
+  sai.sin_port = 0;
+  
   while (1)
   {
     in_len = cread(tun, in_buffer, 2000);
     std::cout << "!!------    Received packet     ------!!" << std::endl;
     std::cout << std::endl << std::endl;
-    out_len = process_bmsg(in_buffer, &sai, in_len);
-    sendto(rsock, in_buffer, out_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+    offset = process_bmsg(in_buffer, &sai, in_len);
+    if (offset == 0)
+    {
+      sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+    }
+    else if (offset > 0)
+    {
+      write(pipes[1], in_buffer+offset, in_len-offset);
+      sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+    }
     memset(in_buffer, 0, sizeof(in_buffer));
     in_len = 0;
-    out_len = 0;
+    offset = 0;
     std::cout << std::endl << std::endl;
   }
 }
