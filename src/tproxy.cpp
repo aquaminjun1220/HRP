@@ -336,8 +336,10 @@ int main()
   if (!Fork())
   {
     LOG("INFO: Starting child 1 - RTP PCMU -> PCM");
+    int devnull = open("/dev/null", O_RDWR);
     dup2(pipes[0], 0);
-    //dup2(pipes[3], 1);
+    dup2(pipes[3], 1);
+    dup2(devnull, 2);
 
     close(pipes[0]);
     close(pipes[1]);
@@ -350,10 +352,60 @@ int main()
     close(pipes[8]);
     close(pipes[9]);
 
-    char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "./audio/ntrd.pcm", NULL};
+    char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", "-fflags", "nobuffer",  "-i", "pipe:0", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", "-flush_packets", "1", "pipe:", NULL};
     if (execvp(*args, args) < 0)
     {
       perror("ERROR: Failed to start child 1 - RTP PCMU -> PCM");
+      exit(-1);
+    }
+  }
+
+  if (0)
+  {
+    LOG("INFO: Starting child 2 - PCM -> play");
+    dup2(pipes[2], 0);
+    //dup2(pipes[5], 1);
+
+    close(pipes[0]);
+    close(pipes[1]);
+    close(pipes[2]);
+    close(pipes[3]);
+    close(pipes[4]);
+    close(pipes[5]);
+    close(pipes[6]);
+    close(pipes[7]);
+    close(pipes[8]);
+    close(pipes[9]);
+
+    char *args[] = {"aplay", "-f", "S16_LE", "-c", "1", "-r", "8000", NULL};
+    if (execvp(*args, args) < 0)
+    {
+      perror("ERROR: Failed to start child 1 - PCM -> play");
+      exit(-1);
+    }
+  }
+
+  if (!Fork())
+  {
+    LOG("INFO: Starting child 2 - PCM -> count");
+    dup2(pipes[2], 0);
+    //dup2(pipes[5], 1);
+
+    close(pipes[0]);
+    close(pipes[1]);
+    close(pipes[2]);
+    close(pipes[3]);
+    close(pipes[4]);
+    close(pipes[5]);
+    close(pipes[6]);
+    close(pipes[7]);
+    close(pipes[8]);
+    close(pipes[9]);
+
+    char *args[] = {"./build/BB", NULL};
+    if (execvp(*args, args) < 0)
+    {
+      perror("ERROR: Failed to start child 1 - PCM -> count");
       exit(-1);
     }
   }

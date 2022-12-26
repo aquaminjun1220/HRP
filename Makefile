@@ -1,4 +1,4 @@
-all: tproxy AA
+all: tproxy AA BB
 
 
 tproxy: ./src/tproxy.cpp
@@ -7,3 +7,5 @@ tproxy: ./src/tproxy.cpp
 AA: ./src/AA.cpp
 	g++ -o ./build/AA ./src/AA.cpp -O2 -std=c++20
 
+BB: ./src/BB.cpp
+	g++ -o ./build/BB ./src/BB.cpp -O2 -std=c++20
