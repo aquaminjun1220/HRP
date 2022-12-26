@@ -19,6 +19,17 @@
 #include <map>
 #include <signal.h>
 
+#define verbose 0
+
+#if verbose
+#define LOG(str) std::cout << str << std::endl
+#endif
+
+#if !verbose
+#define LOG(str)
+#endif
+
+
 typedef void handler_t(int);
 static char buffer[128];
 static std::map<std::string, int> valid_methods = {
@@ -63,7 +74,7 @@ static int open_tun(char *dev)
     perror("ERROR: Failed to open /dev/net/tun");
     exit(-1);
   }
-  std::cout << "INFO: opened tun" << std::endl;
+  LOG("INFO: opened tun");
 
   // setup ifr for first ioctl call (initialize tun)
   memset(&ifr, 0, sizeof(ifr));
@@ -79,7 +90,7 @@ static int open_tun(char *dev)
     exit(-1);
   }
   strcpy(dev, ifr.ifr_name);
-  std::cout << "INFO: initialized tun" << std::endl;
+  LOG("INFO: intialized tun");
 
   // using socket, set tun
   sfd = socket(AF_INET, SOCK_DGRAM, 0);
@@ -101,7 +112,7 @@ static int open_tun(char *dev)
     exit(-1);
   } 
   close(sfd);
-  std::cout << "INFO: setted tun" << std::endl;
+  LOG("INFO: setted tun");
   return fd;
 }
 
@@ -117,8 +128,8 @@ static void init_rules(char *dev)
   system("nft add chain HRP output \"{ type route hook output priority 0 ; }\"");
   system("nft add rule HRP output meta mark != 10 udp sport @inc_portSIP meta mark set 77");
   system("nft add rule HRP output meta mark != 10 udp sport @inc_portRTP meta mark set 77");
-  std::cout << "INFO: advanced routing initialized" << std::endl;
-  std::cout << "INFO: sniffing on port 5060 for SIP packets" << std::endl;
+  LOG("INFO: advanced routing initialized");
+  LOG("INFO: sniffing on port 5060 for SIP packets");
 }
 
 static int rawsock_set()
@@ -130,11 +141,13 @@ static int rawsock_set()
       perror("ERROR: Failed to create raw socket");
       kill(0, SIGINT);
   }
+  LOG("INFO: setted raw socket");
   if (setsockopt(rsock, SOL_SOCKET, SO_MARK, &mark, sizeof(mark)) < 0)
   {
       perror("ERROR: Failed to set SO_MARK");
       kill(0, SIGINT);
   }
+  LOG("INFO: starting to mark raw sockets");
   return rsock;
 }
 
@@ -158,7 +171,7 @@ void sigINThandler(int sig)
   system("ip rule delete fwmark 77 table 77");
   system("ip route flush table 77");
   system("nft delete table HRP");
-  std::cout << "INFO: advanced routing terminated" << std::endl;
+  LOG("INFO: advanced routing terminated");
   sigprocmask(SIG_SETMASK, &prev_mask, NULL);
   errno = olderrno;
   exit(0);
@@ -167,7 +180,7 @@ void sigINThandler(int sig)
 handler_t *Signal(int signum, handler_t *handler)
 {
   struct sigaction action, old_action;
-  std::cout << "INFO: installing SIGINT handler" << std::endl;
+  LOG("INFO: installing SIGINT handler");
   action.sa_handler = handler;
   sigemptyset(&action.sa_mask); /* block sigs of type being handled */
   action.sa_flags = SA_RESTART; /* restart syscalls if possible */
@@ -221,18 +234,18 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   {
     struct iphdr *ip = reinterpret_cast<struct iphdr *>(iptr);
     iptr += sizeof(struct iphdr);
-    std::cout << "--------    IPV4 Header Info    --------" << std::endl;
+    LOG("--------    IPV4 Header Info    --------");
     char addr[64];
     inet_ntop(AF_INET, &(ip->saddr), addr, sizeof(addr));
-    std::cout << "Source Address: " << addr << std::endl;
+    LOG("Source Address: " << addr);
     inet_ntop(AF_INET, &(ip->daddr), addr, sizeof(addr));
-    std::cout << "Destination Address: " << addr << std::endl;
+    LOG("Destination Address: " << addr);
     sai->sin_family = AF_INET;
     sai->sin_addr.s_addr = ip->daddr;
     sai->sin_port = 0;
     if (ip->protocol != IPPROTO_UDP)
     {
-      std::cout << "--------     non-UDP Packet     --------" << std::endl;
+      LOG("--------     non-UDP Packet     --------");
       return -1;
     }
   }
@@ -242,19 +255,19 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   {
     struct ip6_hdr *ip6 = reinterpret_cast<struct ip6_hdr *>(iptr);
     iptr += sizeof(struct ip6_hdr);
-    std::cout << "--------    IPV6 Header Info    --------" << std::endl;
+    LOG("--------    IPV6 Header Info    --------");
     char addr[64];
     inet_ntop(AF_INET6, &(ip6->ip6_src), addr, sizeof(addr));
-    std::cout << "Source Address: " << addr << std::endl;
+    LOG("Source Address: " << addr);
     inet_ntop(AF_INET6, &(ip6->ip6_dst), addr, sizeof(addr));
-    std::cout << "Destination Address: " << addr << std::endl;
-    std::cout << "--------   IPV6 not supported   --------" << std::endl;
+    LOG("Destination Address: " << addr);
+    LOG("--------   IPV6 not supported   --------");
     return -1;
   }
 
   else
   {
-    std::cout << "--------     non-IP Packet      --------" << std::endl;
+    LOG("--------     non-IP Packet      --------");
     return -1;
   }
 
@@ -262,18 +275,18 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   struct udphdr *udp = reinterpret_cast<struct udphdr *>(iptr);
   iptr += sizeof(struct udphdr);
   udp->check = 0;
-  std::cout << "--------    UDP Header Info     --------" << std::endl;
-  std::cout << "Source Port: " << ntohs(udp->source) << std::endl;
-  std::cout << "Destination Port: " << ntohs(udp->dest) << std::endl;
+  LOG("--------    UDP Header Info     --------");
+  LOG("Source Port: " << ntohs(udp->source));
+  LOG("Destination Port: " << ntohs(udp->dest));
 
   // application is SIP, copy udp header and payload to out_buffer, modify source port.
   // do some SIP specific stuff
   if (ntohs(udp->source) == 5060)
   {
-    std::cout << "--------       SIP Packet       --------" << std::endl;
+    LOG("--------       SIP Packet       --------");
     std::string sipmsg((char *)(iptr), in_len);
     std::string method = find_method(sipmsg);
-    std::cout << "SIP Method: " << method << std::endl;
+    LOG("SIP Method: " << method);
     if ((method == "INVITE") || (method == "200 OK INVITE"))
     {
       int i = sipmsg.find("\r\n\r\n", 0);
@@ -284,19 +297,24 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
       sprintf(buffer, "nft add element HRP inc_portRTP \"{ %s }\" ", new_rtpport.c_str());
       system(buffer);
       rtpport = stoi(new_rtpport);
-      std::cout << "INFO: Detected INVITE. Adding port " << new_rtpport << " to rtp port set." << std::endl;
+      LOG("INFO: Detected INVITE. Adding port " << new_rtpport << " to rtp port set.");
     }
     else if ((method == "BYE") || (method == "CANCEL") || (method == "200 OK BYE") || (method == "200 OK CANCEL"))
     {
       system("nft flush set HRP inc_portRTP");
       rtpport = 0;
-      std::cout << "INFO: Detected BYE-ish. Flushing rtp port set." << std::endl;
+      LOG("INFO: Detected BYE-ish. Flushing rtp port set.");
     }
     return 0;
   }
   else if (ntohs(udp->source) == rtpport)
   {
-    std::cout << "--------    RTP Packet    --------" << std::endl;
+    if (*(reinterpret_cast<uint16_t *>(iptr)) != 0x0080)
+    {
+      LOG("--------   Invalid RTP Packet   --------");
+      return 0;
+    }
+    LOG("--------    RTP Packet    --------");
     return iptr + 12 - in_buffer;
   }
   else
@@ -317,9 +335,9 @@ int main()
 
   if (!Fork())
   {
-    std::cout << "INFO: Starting child 1 - RTP PCMU -> .wav" << std::endl;
+    LOG("INFO: Starting child 1 - RTP PCMU -> PCM");
     dup2(pipes[0], 0);
-    dup2(pipes[3], 1);
+    //dup2(pipes[3], 1);
 
     close(pipes[0]);
     close(pipes[1]);
@@ -332,10 +350,10 @@ int main()
     close(pipes[8]);
     close(pipes[9]);
 
-    char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0", "./pipe1.wav", NULL};
+    char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-i", "pipe:0", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "./audio/ntrd.pcm", NULL};
     if (execvp(*args, args) < 0)
     {
-      perror("ERROR: Failed to start child 1 - RTP PCMU -> .wav");
+      perror("ERROR: Failed to start child 1 - RTP PCMU -> PCM");
       exit(-1);
     }
   }
@@ -355,12 +373,14 @@ int main()
   sai.sin_family = AF_INET;
   sai.sin_addr.s_addr = 0;
   sai.sin_port = 0;
-  
+
+  int tmpfd = open("./audio/ntrd.mu", O_CREAT|O_RDWR, S_IRWXU);
+
   while (1)
   {
     in_len = cread(tun, in_buffer, 2000);
-    std::cout << "!!------    Received packet     ------!!" << std::endl;
-    std::cout << std::endl << std::endl;
+    LOG("!!------    Received packet     ------!!");
+    LOG(std::endl);
     offset = process_bmsg(in_buffer, &sai, in_len);
     if (offset == 0)
     {
@@ -368,12 +388,15 @@ int main()
     }
     else if (offset > 0)
     {
-      write(pipes[1], in_buffer+offset, in_len-offset);
+      if (write(pipes[1], in_buffer+offset, in_len-offset) < 0)
+        perror("ERROR: Something went wrong with write to pipe");
+      if (write(tmpfd, in_buffer+offset, in_len-offset) < 0)
+        perror("ERROR: Something went wrong with write to pipe");
       sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
     }
     memset(in_buffer, 0, sizeof(in_buffer));
     in_len = 0;
     offset = 0;
-    std::cout << std::endl << std::endl;
+    LOG(std::endl);
   }
 }
