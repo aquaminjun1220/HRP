@@ -20,13 +20,24 @@
 #include <signal.h>
 
 #define verbose 1
+#define filelog 1
 
-#if verbose
-#define LOG(str) std::cout << str << std::endl
+#if verbose >= 1
+#define LOG(str) std::cout << str << std::endl; logfd << str << std::endl
+#else
+#define LOG(str) logfd << str << std::endl
 #endif
 
-#if !verbose
-#define LOG(str)
+#if verbose >= 2
+#define LOG2(str) std::cout << str << std::endl
+#else
+#define LOG2(str)
+#endif
+
+#if filelog
+#define FLOG(str) logfd << str << std::endl
+#else
+#define FLOG(str)
 #endif
 
 
@@ -48,6 +59,8 @@ static std::map<std::string, int> valid_methods = {
   {"INFO", 1},
   {"OPTIONS", 1}
 };
+static std::fstream logfd("./log/log.txt", std::ios::out | std::ios::trunc);
+
 static int rtpport;
 static int open_tun(char *);
 static void init_rules(char *);
@@ -276,18 +289,18 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   {
     struct iphdr *ip = reinterpret_cast<struct iphdr *>(iptr);
     iptr += sizeof(struct iphdr);
-    LOG("--------    IPV4 Header Info    --------");
+    LOG2("--------    IPV4 Header Info    --------");
     char addr[64];
     inet_ntop(AF_INET, &(ip->saddr), addr, sizeof(addr));
-    LOG("Source Address: " << addr);
+    LOG2("Source Address: " << addr);
     inet_ntop(AF_INET, &(ip->daddr), addr, sizeof(addr));
-    LOG("Destination Address: " << addr);
+    LOG2("Destination Address: " << addr);
     sai->sin_family = AF_INET;
     sai->sin_addr.s_addr = ip->daddr;
     sai->sin_port = 0;
     if (ip->protocol != IPPROTO_UDP)
     {
-      LOG("--------     non-UDP Packet     --------");
+      LOG2("--------     non-UDP Packet     --------");
       return -3;
     }
   }
@@ -297,19 +310,19 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   {
     struct ip6_hdr *ip6 = reinterpret_cast<struct ip6_hdr *>(iptr);
     iptr += sizeof(struct ip6_hdr);
-    LOG("--------    IPV6 Header Info    --------");
+    LOG2("--------    IPV6 Header Info    --------");
     char addr[64];
     inet_ntop(AF_INET6, &(ip6->ip6_src), addr, sizeof(addr));
-    LOG("Source Address: " << addr);
+    LOG2("Source Address: " << addr);
     inet_ntop(AF_INET6, &(ip6->ip6_dst), addr, sizeof(addr));
-    LOG("Destination Address: " << addr);
-    LOG("--------   IPV6 not supported   --------");
+    LOG2("Destination Address: " << addr);
+    LOG2("--------   IPV6 not supported   --------");
     return -3;
   }
 
   else
   {
-    LOG("--------     non-IP Packet      --------");
+    LOG2("--------     non-IP Packet      --------");
     return -3;
   }
 
@@ -317,9 +330,9 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
   struct udphdr *udp = reinterpret_cast<struct udphdr *>(iptr);
   iptr += sizeof(struct udphdr);
   udp->check = 0;
-  LOG("--------    UDP Header Info     --------");
-  LOG("Source Port: " << ntohs(udp->source));
-  LOG("Destination Port: " << ntohs(udp->dest));
+  LOG2("--------    UDP Header Info     --------");
+  LOG2("Source Port: " << ntohs(udp->source));
+  LOG2("Destination Port: " << ntohs(udp->dest));
 
   // application is SIP, copy udp header and payload to out_buffer, modify source port.
   // do some SIP specific stuff
@@ -328,7 +341,7 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
     LOG("--------       SIP Packet       --------");
     std::string sipmsg((char *)(iptr), in_len);
     std::string method = find_method(sipmsg);
-    LOG("SIP Method: " << method);
+    LOG2("SIP Method: " << method);
     if ((method == "INVITE") || (method == "200 OK INVITE"))
     {
       int i = sipmsg.find("\r\n\r\n", 0);
@@ -339,14 +352,14 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
       sprintf(sprintf_buf, "nft add element HRP inc_portRTP \"{ %s }\" ", new_rtpport.c_str());
       system(sprintf_buf);
       rtpport = stoi(new_rtpport);
-      LOG("INFO: Detected INVITE-like. Adding port " << new_rtpport << " to rtp port set.");
+      LOG2("INFO: Detected INVITE-like. Adding port " << new_rtpport << " to rtp port set.");
       return -1;
     }
     else if ((method == "BYE") || (method == "CANCEL") || (method == "200 OK BYE") || (method == "200 OK CANCEL"))
     {
       system("nft flush set HRP inc_portRTP");
       rtpport = 0;
-      LOG("INFO: Detected BYE-like. Flushing rtp port set.");
+      LOG2("INFO: Detected BYE-like. Flushing rtp port set.");
       return -2;
     }
     return 0;
@@ -358,7 +371,7 @@ static int process_bmsg(uint8_t *in_buffer, struct sockaddr_in *sai, int in_len)
       LOG("--------   Invalid RTP Packet   --------");
       return 0;
     }
-    LOG("--------    RTP Packet    --------");
+    LOG("--------       RTP Packet       --------");
     return iptr + 12 - in_buffer;
   }
   else
@@ -370,34 +383,36 @@ int main()
   std::cout << "-------- Press any key to start --------" << std::endl;
   std::cin.get();
 
-  int pipes[10];
-  pipe(pipes);
-  pipe(pipes+2);
-  pipe(pipes+4);
-  pipe(pipes+6);
-  pipe2(pipes+8, O_DIRECT);
+  int pipes[5][2];
+  pipe(pipes[0]);
+  pipe(pipes[1]);
+  pipe(pipes[2]);
+  pipe(pipes[3]);
+  pipe2(pipes[4], O_DIRECT);
+
 
   if (!Fork())
   {
-    LOG("INFO: Starting child 1 - RTP PCMU -> PCM");
-    dup2(pipes[0], 0);
-    dup2(pipes[3], 1);
-    int devnull = open("/dev/null", O_RDWR);
-    dup2(devnull, 2);
+    LOG("CHILD1: Starting child 1 - RTP PCMU -> PCM");
+    dup2(pipes[0][0], 0);
+    dup2(pipes[1][1], 1);
+    int fd = open("./log/decoder.txt", O_RDWR);
+    dup2(fd, 2);
+    close(fd);
 
-    close(pipes[0]);
-    close(pipes[1]);
-    close(pipes[2]);
-    close(pipes[3]);
-    close(pipes[4]);
-    close(pipes[5]);
-    close(pipes[6]);
-    close(pipes[7]);
-    close(pipes[8]);
-    close(pipes[9]);
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    close(pipes[4][0]);
+    close(pipes[4][1]);
 
     char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", \
-    "-i", "pipe:0", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
+    "-i", "pipe:", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
     "-flush_packets", "1", "pipe:", NULL};
 
     if (execvp(*args, args) < 0)
@@ -408,51 +423,50 @@ int main()
   }
   if (!Fork())
   {
-    LOG("INFO: Starting child 2 - PCM -> wt PCM");
-    dup2(pipes[2], 0);
-    dup2(pipes[5], 1);
+    LOG("CHILD2: Starting child 2 - PCM -> wt PCM");
+    dup2(pipes[1][0], 0);
+    dup2(pipes[2][1], 1);
 
-    close(pipes[0]);
-    close(pipes[1]);
-    close(pipes[2]);
-    close(pipes[3]);
-    close(pipes[4]);
-    close(pipes[5]);
-    close(pipes[6]);
-    close(pipes[7]);
-    close(pipes[8]);
-    close(pipes[9]);
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    close(pipes[4][0]);
+    close(pipes[4][1]);
 
-    uint8_t wt_buf[1024];
-    int read_bytes = 0;
-
-    while(1)
+    char *args[] = {"audiowmark", "add", "-", "-", "0123456789abcdef0011223344556677", "--format", "raw", "--raw-rate", "8000", "--raw-bits", "16",\
+     "--raw-endian", "little", "--raw-encoding", "signed", "--raw-channels", "1", NULL};
+    if (execvp(*args, args) < 0)
     {
-      read_bytes = cread(0, wt_buf, 1024);
-      cwrite(1, wt_buf, read_bytes);
+      perror("ERROR: Failed to start child 2 - PCM -> wt PCM");
+      exit(-1);
     }
   }
   if (!Fork())
   {
-    LOG("INFO: Starting child 3 - wt PCM -> wt RTP PCMU");
-    dup2(pipes[4], 0);
-    dup2(pipes[7], 1);
+    LOG("CHILD3: Starting child 3 - wt PCM -> wt RTP PCMU");
+    dup2(pipes[2][0], 0);
+    dup2(pipes[3][1], 1);
     int devnull = open("/dev/null", O_RDWR);
     dup2(devnull, 2);
 
-    close(pipes[0]);
-    close(pipes[1]);
-    close(pipes[2]);
-    close(pipes[3]);
-    close(pipes[4]);
-    close(pipes[5]);
-    close(pipes[6]);
-    close(pipes[7]);
-    close(pipes[8]);
-    close(pipes[9]);
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    close(pipes[4][0]);
+    close(pipes[4][1]);
 
     char *args[] = {"ffmpeg", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", \
-    "-i", "pipe:0", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
+    "-i", "pipe:", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
     "-flush_packets", "1", "pipe:", NULL};
     if (execvp(*args, args) < 0)
     {
@@ -466,20 +480,20 @@ int main()
   
   if (!Fork())
   {
-    LOG("INFO: Starting child 4 - wt RTP PCMU -> network");
-    dup2(pipes[6], 0);
-    int pcktfd = pipes[8];
+    LOG("CHILD4: Starting child 4 - wt RTP PCMU -> network");
+    dup2(pipes[3][0], 0);
+    int pcktfd = pipes[4][0];
 
-    close(pipes[0]);
-    close(pipes[1]);
-    close(pipes[2]);
-    close(pipes[3]);
-    close(pipes[4]);
-    close(pipes[5]);
-    close(pipes[6]);
-    close(pipes[7]);
-
-    close(pipes[9]);
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    
+    close(pipes[4][1]);
 
     uint8_t out_buffer[2048];
     int rtp_len = 0;
@@ -492,10 +506,10 @@ int main()
       if (rtp_len < 0)
       {
         rtp_len = -rtp_len;
-        LOG("CHILD4: detected packet flusher with length " << rtp_len << " bytes");
+        FLOG("CHILD4: detected packet flusher from pipe4");
         optr += nread(0, optr, rtp_len);
         memset(out_buffer, 0, sizeof(out_buffer));
-        LOG("CHILD4: flushed output buffer");
+        FLOG("CHILD4: flushed decoder buffer");
         continue;
       }
 
@@ -503,7 +517,7 @@ int main()
       optr += cread(pcktfd, optr, sizeof(out_buffer));
       optr += nread(0, optr, rtp_len);
       sendto(rsock, out_buffer, optr - out_buffer, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
-      LOG("CHILD4: sent " << optr - out_buffer << " bytes to raw socket");
+      FLOG("CHILD4: sent " << optr - out_buffer << " bytes of RTP packet to raw sock");
       memset(out_buffer, 0, sizeof(out_buffer));
     }
     exit(0);
@@ -529,35 +543,47 @@ int main()
   while (1)
   {
     in_len = cread(tun, in_buffer, 2000);
-    LOG("!!------    Received packet     ------!!");
-    LOG(std::endl);
+    LOG2("!!------    Received packet     ------!!");
+    LOG2(std::endl);
     offset = process_bmsg(in_buffer, &sai, in_len);
 
-    if ((offset == 0)||(offset == -1))
+    if (offset == 0)
     {
       sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+      FLOG("MAIN: sent " << in_len << " bytes of normal packet to raw sock");
+    }
+
+    else if (offset == -1)
+    {
+      sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+      FLOG("MAIN: sent " << in_len << " bytes of INVITE-like packet to raw sock");
     }
 
     else if (offset == -2)
     {
       int flush_len = -1024;
-      cwrite(pipes[1], in_buffer, -flush_len);
-      cwrite(pipes[9], (void *)&flush_len, sizeof(int));
+      cwrite(pipes[0][1], in_buffer, -flush_len);
+      FLOG("MAIN: sent " << -flush_len << " bytes of packet flusher to pipe0");
+      cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
+      FLOG("MAIN: sent packet flusher metadata to pipe4");
       sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
+      FLOG("MAIN: sent " << in_len << " bytes of BYE-like packet to raw sock");
     }
 
     else if (offset > 0)
     {
       int rtp_len = in_len - offset;
-      cwrite(pipes[1], in_buffer+offset, rtp_len);
-      cwrite(pipes[9], (void *)&rtp_len, sizeof(int));
-      cwrite(pipes[9], &sai, sizeof(sai));
-      cwrite(pipes[9], in_buffer, offset);
+      cwrite(pipes[0][1], in_buffer+offset, rtp_len);
+      FLOG("MAIN: sent " << rtp_len << " bytes of rtp payload to pipe0");
+      cwrite(pipes[4][1], (void *)&rtp_len, sizeof(int));
+      cwrite(pipes[4][1], &sai, sizeof(sai));
+      cwrite(pipes[4][1], in_buffer, offset);
+      FLOG("MAIN: sent rtp payload metadata to pipe4");
       cwrite(tmpfd, in_buffer+offset, rtp_len);
     }
     memset(in_buffer, 0, sizeof(in_buffer));
     in_len = 0;
     offset = 0;
-    LOG(std::endl);
+    LOG2(std::endl);
   }
 }
