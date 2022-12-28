@@ -388,7 +388,7 @@ int main()
   pipe(pipes[1]);
   pipe(pipes[2]);
   pipe(pipes[3]);
-  pipe2(pipes[4], O_DIRECT);
+  pipe(pipes[4]);
 
 
   if (!Fork())
@@ -396,9 +396,9 @@ int main()
     LOG("CHILD1: Starting child 1 - RTP PCMU -> PCM");
     dup2(pipes[0][0], 0);
     dup2(pipes[1][1], 1);
-    int fd = open("./log/decoder.txt", O_RDWR);
-    dup2(fd, 2);
-    close(fd);
+    int devnull = open("/dev/null", O_RDWR);
+    dup2(devnull, 2);
+    close(devnull);
 
     close(pipes[0][0]);
     close(pipes[0][1]);
@@ -482,7 +482,7 @@ int main()
   {
     LOG("CHILD4: Starting child 4 - wt RTP PCMU -> network");
     dup2(pipes[3][0], 0);
-    int pcktfd = pipes[4][0];
+    int metafd = pipes[4][0];
 
     close(pipes[0][0]);
     close(pipes[0][1]);
@@ -496,25 +496,26 @@ int main()
     close(pipes[4][1]);
 
     uint8_t out_buffer[2048];
-    int rtp_len = 0;
-    sockaddr_in sai;
 
     while (1)
     {
+      int rtp_len, hdr_len;
+      sockaddr_in sai;
       uint8_t *optr = out_buffer;
-      cread(pcktfd, &rtp_len, sizeof(int));
+      nread(metafd, &rtp_len, sizeof(int));
       if (rtp_len < 0)
       {
         rtp_len = -rtp_len;
-        FLOG("CHILD4: detected packet flusher from pipe4");
+        FLOG("CHILD4: detected buffer flusher from pipe4");
         optr += nread(0, optr, rtp_len);
         memset(out_buffer, 0, sizeof(out_buffer));
         FLOG("CHILD4: flushed decoder buffer");
         continue;
       }
 
-      cread(pcktfd, &sai, sizeof(sai));
-      optr += cread(pcktfd, optr, sizeof(out_buffer));
+      nread(metafd, &sai, sizeof(sai));
+      nread(metafd, &hdr_len, sizeof(int));
+      optr += nread(metafd, optr, hdr_len);
       optr += nread(0, optr, rtp_len);
       sendto(rsock, out_buffer, optr - out_buffer, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
       FLOG("CHILD4: sent " << optr - out_buffer << " bytes of RTP packet to raw sock");
@@ -563,9 +564,9 @@ int main()
     {
       int flush_len = -1024;
       cwrite(pipes[0][1], in_buffer, -flush_len);
-      FLOG("MAIN: sent " << -flush_len << " bytes of packet flusher to pipe0");
+      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher to pipe0");
       cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
-      FLOG("MAIN: sent packet flusher metadata to pipe4");
+      FLOG("MAIN: sent buffer flusher metadata to pipe4");
       sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
       FLOG("MAIN: sent " << in_len << " bytes of BYE-like packet to raw sock");
     }
@@ -577,6 +578,7 @@ int main()
       FLOG("MAIN: sent " << rtp_len << " bytes of rtp payload to pipe0");
       cwrite(pipes[4][1], (void *)&rtp_len, sizeof(int));
       cwrite(pipes[4][1], &sai, sizeof(sai));
+      cwrite(pipes[4][1], (void *)&offset, sizeof(int));
       cwrite(pipes[4][1], in_buffer, offset);
       FLOG("MAIN: sent rtp payload metadata to pipe4");
       cwrite(tmpfd, in_buffer+offset, rtp_len);
