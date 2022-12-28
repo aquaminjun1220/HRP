@@ -384,6 +384,10 @@ int main()
   std::cin.get();
 
   int pipes[5][2];
+  int pipe15[2];
+  int pipe25[2];
+  pipe(pipe15);
+  pipe(pipe25);
   pipe(pipes[0]);
   pipe(pipes[1]);
   pipe(pipes[2]);
@@ -395,7 +399,7 @@ int main()
   {
     LOG("CHILD1: Starting child 1 - RTP PCMU -> PCM");
     dup2(pipes[0][0], 0);
-    dup2(pipes[1][1], 1);
+    dup2(pipe15[1], 1);
     int devnull = open("/dev/null", O_RDWR);
     dup2(devnull, 2);
     close(devnull);
@@ -410,6 +414,10 @@ int main()
     close(pipes[3][1]);
     close(pipes[4][0]);
     close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
 
     char *args[] = {"ffmpeg", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", \
     "-i", "pipe:", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
@@ -423,8 +431,68 @@ int main()
   }
   if (!Fork())
   {
+    FLOG("CHILD1.5: Starting child 1.5 - pipe logger");
+    dup2(pipe15[0], 0);
+    dup2(pipes[1][1], 1);
+
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    close(pipes[4][0]);
+    close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
+
+    int read_len = 0;
+    uint8_t buf[1024];
+
+    while(1)
+    {
+      read_len = cread(0, buf, 1024);
+      cwrite(1, buf, read_len);
+      FLOG("CHILD1.5: " << read_len << " bytes were transfered through pipe1");
+    }
+  }
+  if (!Fork())
+  {
     LOG("CHILD2: Starting child 2 - PCM -> wt PCM");
     dup2(pipes[1][0], 0);
+    dup2(pipe25[1], 1);
+
+    close(pipes[0][0]);
+    close(pipes[0][1]);
+    close(pipes[1][0]);
+    close(pipes[1][1]);
+    close(pipes[2][0]);
+    close(pipes[2][1]);
+    close(pipes[3][0]);
+    close(pipes[3][1]);
+    close(pipes[4][0]);
+    close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
+
+    char *args[] = {"audiowmark", "add", "-", "-", "0123456789abcdef0011223344556677", "--format", "raw", "--raw-rate", "8000", "--raw-bits", "16",\
+     "--raw-endian", "little", "--raw-encoding", "signed", "--raw-channels", "1", NULL};
+    if (execvp(*args, args) < 0)
+    {
+      perror("ERROR: Failed to start child 2 - PCM -> wt PCM");
+      exit(-1);
+    }
+  }
+  if (!Fork())
+  {
+    FLOG("CHILD2.5: Starting child 2.5 - pipe logger");
+    dup2(pipe25[0], 0);
     dup2(pipes[2][1], 1);
 
     close(pipes[0][0]);
@@ -437,13 +505,19 @@ int main()
     close(pipes[3][1]);
     close(pipes[4][0]);
     close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
 
-    char *args[] = {"audiowmark", "add", "-", "-", "0123456789abcdef0011223344556677", "--format", "raw", "--raw-rate", "8000", "--raw-bits", "16",\
-     "--raw-endian", "little", "--raw-encoding", "signed", "--raw-channels", "1", NULL};
-    if (execvp(*args, args) < 0)
+    int read_len = 0;
+    uint8_t buf[1024];
+
+    while(1)
     {
-      perror("ERROR: Failed to start child 2 - PCM -> wt PCM");
-      exit(-1);
+      read_len = cread(0, buf, 1024);
+      cwrite(1, buf, read_len);
+      FLOG("CHILD2.5: " << read_len << " bytes were transfered through pipe2");
     }
   }
   if (!Fork())
@@ -464,6 +538,10 @@ int main()
     close(pipes[3][1]);
     close(pipes[4][0]);
     close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
 
     char *args[] = {"ffmpeg", "-f", "s16le", "-c:a", "pcm_s16le", "-ar", "8000", "-ac", "1", "-probesize", "32", "-analyzeduration", "0", \
     "-i", "pipe:", "-f", "mulaw", "-c:a", "pcm_mulaw", "-ar", "8000", "-ac", "1", "-packetsize", "160", "-fflags", "flush_packets", \
@@ -494,8 +572,13 @@ int main()
     close(pipes[3][1]);
     
     close(pipes[4][1]);
+    close(pipe15[0]);
+    close(pipe15[1]);
+    close(pipe25[0]);
+    close(pipe25[1]);
 
     uint8_t out_buffer[2048];
+    int tmpfd = open("./log/after_watermark.mulaw", O_CREAT|O_RDWR|O_TRUNC, S_IRWXU);
 
     while (1)
     {
@@ -516,7 +599,9 @@ int main()
       nread(metafd, &sai, sizeof(sai));
       nread(metafd, &hdr_len, sizeof(int));
       optr += nread(metafd, optr, hdr_len);
+      FLOG("CHILD4: read metadata from pipe4");
       optr += nread(0, optr, rtp_len);
+      cwrite(tmpfd, optr - rtp_len, rtp_len);
       sendto(rsock, out_buffer, optr - out_buffer, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
       FLOG("CHILD4: sent " << optr - out_buffer << " bytes of RTP packet to raw sock");
       memset(out_buffer, 0, sizeof(out_buffer));
@@ -539,7 +624,7 @@ int main()
   sai.sin_addr.s_addr = 0;
   sai.sin_port = 0;
 
-  int tmpfd = open("./audio/ntrd.mu", O_CREAT|O_RDWR|O_TRUNC, S_IRWXU);
+  int tmpfd = open("./log/before_watermark.mulaw", O_CREAT|O_RDWR|O_TRUNC, S_IRWXU);
 
   while (1)
   {
@@ -562,11 +647,24 @@ int main()
 
     else if (offset == -2)
     {
-      int flush_len = -1024;
+      int flush_len = -2048;
       cwrite(pipes[0][1], in_buffer, -flush_len);
-      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher to pipe0");
+      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher 1 to pipe0");
       cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
-      FLOG("MAIN: sent buffer flusher metadata to pipe4");
+      FLOG("MAIN: sent buffer flusher 1 metadata to pipe4");
+      cwrite(pipes[0][1], in_buffer, -flush_len);
+      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher 2 to pipe0");
+      cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
+      FLOG("MAIN: sent buffer flusher 2 metadata to pipe4");
+      cwrite(pipes[0][1], in_buffer, -flush_len);
+      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher 3 to pipe0");
+      cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
+      FLOG("MAIN: sent buffer flusher 3 metadata to pipe4");
+      cwrite(pipes[0][1], in_buffer, -flush_len);
+      FLOG("MAIN: sent " << -flush_len << " bytes of buffer flusher 4 to pipe0");
+      cwrite(pipes[4][1], (void *)&flush_len, sizeof(int));
+      FLOG("MAIN: sent buffer flusher 4 metadata to pipe4");
+      
       sendto(rsock, in_buffer, in_len, 0, (sockaddr *)(&sai), sizeof(sockaddr_in));
       FLOG("MAIN: sent " << in_len << " bytes of BYE-like packet to raw sock");
     }
