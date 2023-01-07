@@ -1,6 +1,9 @@
 #!/bin/bash
 
 # Uninstall the virtual microphone.
+#!/bin/bash
+
+# Uninstall the virtual microphone.
 
 pactl unload-module module-pipe-source
-rm $HOME/.config/pulse/client.conf
+rm $HOME/.config/pulse/client.conf 
